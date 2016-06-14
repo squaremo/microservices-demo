@@ -75,23 +75,24 @@ class APITasks(TaskSet):
 
 	def createCustomer(self):
 		# TODO just use same address/card for all generated customers?
-		address = self.client.post("/addresses", json={"street": "my road", "number": "3", "country": "UK", "city": "London"})
-		# print '@@@@@ Address '
-		# print address.json()
-		self.address_id = address.json()["_links"]["self"]["href"][27:]
-		card = self.client.post("/cards", json={"longNum": "5429804235432", "expires": "04/16", "ccv": "432"})
-		# print '@@@@@ Card '
-		# print card.json()
-		self.card_id = card.json()["_links"]["self"]["href"][23:]
+		# address = self.client.post("/addresses", json={"street": "my road", "number": "3", "country": "UK", "city": "London"})
+		# # print '@@@@@ Address '
+		# # print address.json()
+		# self.address_id = address.json()["_links"]["self"]["href"][27:]
+		# card = self.client.post("/cards", json={"longNum": "5429804235432", "expires": "04/16", "ccv": "432"})
+		# # print '@@@@@ Card '
+		# # print card.json()
+		# self.card_id = card.json()["_links"]["self"]["href"][23:]
 		global counter
 		counter += 1
 		self.username = "test_user_" + str(counter)
 		self.password = "test_password"
-		customer = self.client.post("/customers", json={"firstName": "testUser_" + str(counter), "lastName": "Last_Name", "username": self.username, "addresses": ["http://accounts/addresses/" + self.address_id], "cards": ["http://accounts/cards/" + self.card_id]})
-		# print '@@@@@ Customer '
-		# print customer.json()
-		self.cust_id = customer.json()["_links"]["self"]["href"][27:]
-		self.client.get("/register?username=" + "test_user_" + str(counter) + "&password=" + self.password)
+		self.client.post("/register", json={"address":{"street": "my road", "number": "3", "country": "UK", "city": "London"},"card":{"longNum": "5429804235432", "expires": "04/16", "ccv": "432"},"customer":{"firstName": "testUser_" + str(counter), "lastName": "Last_Name", "username": self.username, "password": self.password}})
+		# customer = self.client.post("/customers", json={"firstName": "testUser_" + str(counter), "lastName": "Last_Name", "username": self.username, "addresses": ["http://accounts/addresses/" + self.address_id], "cards": ["http://accounts/cards/" + self.card_id]})
+		# # print '@@@@@ Customer '
+		# # print customer.json()
+		# self.cust_id = customer.json()["_links"]["self"]["href"][27:]
+		# self.client.get("/register?username=" + "test_user_" + str(counter) + "&password=" + self.password)
 
 	def deleteCustomer(self):
 		self.client.delete("/customers/" + self.cust_id)
@@ -100,7 +101,7 @@ class APITasks(TaskSet):
 
 class ErrorTasks(TaskSet):
 
-	# Can we use functions from other classes? should be fine.
+	# Use functions from other class
 	def addItemToCart(self):
 		cart = self.client.get("/cart")
 		catalogue = self.client.get("/catalogue?size=100")
