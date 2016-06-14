@@ -1,24 +1,32 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strings"
 )
 
-var customerUrl = "http://accounts/customers/search/findByUsername"
+var customerSearchPath = "/customers/search/findByUsername"
+var customersPath = "/customers"
+var addressesPath = "/addresses"
+var cardsPath = "/cards"
+
+var customerHost = "accounts"
 var dev bool
+var verbose bool
 var port string
-var users []User
+var users []user
 
 func main() {
 
 	flag.StringVar(&port, "port", "8084", "Port on which to run")
 	flag.BoolVar(&dev, "dev", false, "Run in development mode")
+	flag.BoolVar(&verbose, "verbose", false, "Verbose logging")
 	flag.Parse()
 
 	var file string
@@ -29,95 +37,197 @@ func main() {
 	}
 	loadUsers(file)
 
+	if dev {
+		customerHost = "192.168.99.102:32769"
+	}
+
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/register", registerHandler)
-	fmt.Printf("Login service running on port %s\n", port)
+	log.Printf("Login service running on port %s\n", port)
 	http.ListenAndServe(":"+port, nil)
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Request received")
 	u, p, ok := r.BasicAuth()
 	if !ok {
-		fmt.Printf("No Authorization header present.\n")
+		log.Printf("No Authorization header present.\n")
 		w.WriteHeader(401)
 		return
 	}
 
-	fmt.Printf("Lookup for user %s and password: %s.\n", u, p)
-
-	found := false
-	for _, user := range users {
-		if user.Name == u && user.Password == p {
-			found = true
-		}
+	if dev || verbose {
+		log.Printf("Lookup for user %s and password: %s.\n", u, p)
 	}
-
-	if !found {
-		fmt.Printf("User not authorized.\n")
+	if !validatePassword(u, p) {
+		log.Printf("User not authorized.\n")
 		w.WriteHeader(401)
 		return
 	}
 
-	if dev {
-		customerUrl = "http://localhost:8082/customers/search/findByUsername"
-	}
-	res, err := http.Get(customerUrl + "?username=" + u)
+	c, err := lookupCustomer(u, p)
+
 	if err != nil {
+		w.WriteHeader(401)
 		panic(err)
 	}
-	defer res.Body.Close()
-	fmt.Printf("Body: %s", res.Body)
-	decoder := json.NewDecoder(res.Body)
 
-	var s Search
-	err = decoder.Decode(&s)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("Parsed: %s", s)
-
-	if len(s.Embedded.Customers) < 1 {
-		panic(errors.New("No customers found for that username."))
+	if len(c.Embedded.Customers) < 1 {
+		log.Printf("No customer found for that username")
+		w.WriteHeader(401)
+		return
 	}
 
-	c := s.Embedded.Customers[0]
-	fmt.Printf("Customer: %s", c)
+	cust := c.Embedded.Customers[0]
+	custLink := cust.Links.CustomerLink.Href
 
-	customer := c.Links.Customer.Href
-	fmt.Printf("Customer link: %s", customer)
-
-	idSplit := strings.Split(customer, "/")
+	idSplit := strings.Split(custLink, "/")
 	id := idSplit[len(idSplit)-1]
-	fmt.Printf("Customer id: %s", id)
+	if dev || verbose {
+		log.Printf("Customer id: %s\n", id)
+	}
+	var res response
+	res.Username = cust.Username
+	res.Customer = custLink
+	res.Id = id
 
-	var response Response
-	response.Username = c.Username
-	response.Customer = customer
-	response.Id = id
-
-	js, err := json.Marshal(response)
-	fmt.Printf("Marshalled: %s", js)
+	js, err := json.Marshal(res)
 
 	if err != nil {
+		w.WriteHeader(401)
 		panic(err)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(js)
-	// respond with customer id OR 401 not authorized
-	w.WriteHeader(200)
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
-	// Create new customer via accounts service
+	decoder := json.NewDecoder(r.Body)
 
-	// Store id? user and password
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-	users = append(users, User{Id: "", Name: username, Password: password})
+	var b registerBody
+	err := decoder.Decode(&b)
+
+	if err != nil {
+		log.Printf("No request body found.\n" + err.Error())
+		w.WriteHeader(400)
+		return
+	}
+
+	addressLink, err := createAddress(b.Address)
+	if err != nil {
+		log.Printf(err.Error())
+		w.WriteHeader(400)
+		return
+	}
+	cardLink, err := createCard(b.Card)
+	if err != nil {
+		log.Printf(err.Error())
+		w.WriteHeader(400)
+		return
+	}
+	c := b.Customer
+	username := c.Username
+	password := c.Password
+	c.Password = ""
+	c.Addresses = []string{addressLink}
+	c.Cards = []string{cardLink}
+
+	if !createCustomer(c) {
+		log.Println("Customer not created")
+		w.WriteHeader(400)
+		return
+	}
+
+	users = append(users, user{Id: "", Name: username, Password: password})
 
 	w.WriteHeader(200)
-	// Not yet implemented
-	// w.WriteHeader(501)
+}
+
+func createAddress(a address) (string, error) {
+	jsonBytes, err := json.Marshal(a)
+	if err != nil {
+		panic(err)
+	}
+	url := "http://" + customerHost + addressesPath
+
+	if dev || verbose {
+		fmt.Printf("POSTing %v\n", string(jsonBytes))
+		fmt.Println("URL: " + url)
+	}
+
+	res, err := http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return "", err
+	}
+
+	return res.Header.Get("Location"), nil
+}
+
+func createCard(c card) (string, error) {
+	jsonBytes, err := json.Marshal(c)
+	if err != nil {
+		panic(err)
+	}
+
+	res, err := http.Post("http://" + customerHost + addressesPath, "application/json", bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return "", err
+	}
+
+	return res.Header.Get("Location"), nil
+}
+
+func createCustomer(c customer) bool {
+	jsonBytes, err := json.Marshal(c)
+	if err != nil {
+		panic(err)
+	}
+
+	if dev || verbose {
+		fmt.Println("Posting Customer: " + string(jsonBytes))
+	}
+	res, err := http.Post("http://" + customerHost + addressesPath, "application/json", bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		panic(err)
+	}
+	if res.StatusCode == 200 || res.StatusCode == 201 {
+		return true
+	}
+	return false
+}
+
+
+func lookupCustomer(u, p string) (customerResponse, error) {
+	var c customerResponse
+
+	reqUrl := "http://" + customerHost + customerSearchPath + "?username=" + u
+	log.Println(reqUrl)
+	res, err := http.Get(reqUrl)
+	if err != nil {
+		return c, err
+	}
+
+	defer res.Body.Close()
+	json.NewDecoder(res.Body).Decode(&c)
+
+	if dev || verbose {
+		log.Printf("Received response: %v\n", c)
+	}
+
+	if err != nil {
+		return c, err
+	}
+
+	return c, nil
+}
+
+func validatePassword(u, p string) bool{
+	for _, user := range users {
+		if user.Name == u && user.Password == p {
+			return true
+		}
+	}
+	return false
 }
 
 func loadUsers(file string) {
@@ -126,37 +236,57 @@ func loadUsers(file string) {
 		panic(err)
 	}
 	json.Unmarshal(f, &users)
-	fmt.Printf("Loaded %d users.", len(users))
+	log.Printf("Loaded %d users.", len(users))
 }
 
-type User struct {
+type customerResponse struct {
+	Embedded struct {
+		Customers []struct {
+			Username string `json:"username"`
+			Links    struct {
+				CustomerLink struct {
+					Href string `json:"href"`
+				} `json:"customer"`
+			} `json:"_links"`
+			} `json:"customer"`
+	} `json:"_embedded"`
+}
+
+type user struct {
 	Id       string `json:"id"`
 	Name     string `json:"name"`
 	Password string `json:"password"`
 }
 
-type Search struct {
-	Embedded Embedded `json:"_embedded"`
+type registerBody struct {
+	Address address `json:"address"`
+	Card card `json:"card"`
+	Customer customer `json:"customer"`
 }
 
-type Embedded struct {
-	Customers []Customer `json:"customer"`
-}
-
-type Customer struct {
+type customer struct {
+	FirstNmae string `json:"firstName"`
+	LastName string `json:"lastName"`
 	Username string `json:"username"`
-	Links    Links  `json:"_links"`
+	Password string `json:"password,omitempty"`
+	Addresses []string `json:"addresses"`
+	Cards []string `json:"cards"`
 }
 
-type Links struct {
-	Customer Link `json:"customer"`
+type address struct {
+	Street string `json:"street"`
+	Number string `json:"number"`
+	Country string `json:"country"`
+	City string `json:"city"`
 }
 
-type Link struct {
-	Href string `json:"href"`
+type card struct {
+	LongNum string `json:"longNum"`
+	Expires string `json:"expires"`
+	Ccv string `json:"ccv"`
 }
 
-type Response struct {
+type response struct {
 	Username string `json:"username"`
 	Customer string `json:"customer"`
 	Id       string `json:"id"`

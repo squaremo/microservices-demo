@@ -115,8 +115,20 @@ app.get("/login", function (req, res, next) {
 });
 
 // Register - TO BE USED FOR TESTING ONLY (for now)
-app.get("/register", function(req, res, next) {
-    simpleHttpRequest(registerUrl + "?username=" + req.query.username + "&password=" + req.query.password, res, next);
+app.post("/register", function(req, res, next) {
+    var options = {
+        uri: registerUrl,
+        method: 'POST',
+        json: true,
+        body: req.body
+    };
+    console.log("Registering User: " + req.body);
+    request(options, function (error, response, body) {
+        if (error) {
+            return next(error);
+        }
+        respondSuccessBody(res, JSON.stringify(body));
+    }.bind({res: res}));
 });
 
 // Create Customer - TO BE USED FOR TESTING ONLY (for now)
@@ -315,7 +327,7 @@ app.post("/cart", function (req, res, next) {
             };
             console.log("POST to carts: " + options.uri + " body: " + JSON.stringify(options.body));
             request(options, function (error, response, body) {
-                callback(error, response.statusCode);
+                callback(error);
             });
         }
     ], function (err, statusCode) {
