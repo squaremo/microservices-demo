@@ -16,6 +16,7 @@ var customersPath = "/customers"
 var addressesPath = "/addresses"
 var cardsPath = "/cards"
 
+var contentType = "application/json"
 var customerHost = "accounts"
 var dev bool
 var verbose bool
@@ -38,7 +39,7 @@ func main() {
 	loadUsers(file)
 
 	if dev {
-		customerHost = "192.168.99.102:32769"
+		customerHost = "192.168.99.101:32772"
 	}
 
 	http.HandleFunc("/login", loginHandler)
@@ -97,7 +98,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
 		panic(err)
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", contentType)
 	w.Write(js)
 }
 
@@ -113,34 +114,76 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	username, password := createUser(b) 
+
+	if len(username) < 1 {
+		log.Printf("No request body found.\n" + err.Error())
+		w.WriteHeader(400)
+		return
+	}
+
+	cr, err := lookupCustomer(username, password)
+
+	if err != nil || len(cr.Embedded.Customers) < 1 {
+		log.Printf("No customer found for that username")
+		w.WriteHeader(401)
+		panic(err)
+	}
+
+	cust := cr.Embedded.Customers[0]
+	custLink := cust.Links.CustomerLink.Href
+
+	idSplit := strings.Split(custLink, "/")
+	id := idSplit[len(idSplit)-1]
+	if dev || verbose {
+		log.Printf("Customer id: %s\n", id)
+	}
+	var res response
+	res.Username = cust.Username
+	res.Customer = custLink
+	res.Id = id
+
+	js, err := json.Marshal(res)
+
+	if err != nil {
+		w.WriteHeader(401)
+		panic(err)
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Write(js)
+}
+
+func createUser(b registerBody) (string, string) {
+	var username string = ""
+	var password string = ""
+
 	addressLink, err := createAddress(b.Address)
 	if err != nil {
 		log.Printf(err.Error())
-		w.WriteHeader(400)
-		return
+		return username, password
 	}
+	fmt.Println("AddressLink : " + addressLink)
 	cardLink, err := createCard(b.Card)
 	if err != nil {
 		log.Printf(err.Error())
-		w.WriteHeader(400)
-		return
+		return username, password
 	}
+	fmt.Println("CardLink: " + cardLink)
 	c := b.Customer
-	username := c.Username
-	password := c.Password
+	username = c.Username
+	password = c.Password
 	c.Password = ""
 	c.Addresses = []string{addressLink}
 	c.Cards = []string{cardLink}
 
 	if !createCustomer(c) {
 		log.Println("Customer not created")
-		w.WriteHeader(400)
-		return
+		return "", ""
 	}
 
 	users = append(users, user{Id: "", Name: username, Password: password})
 
-	w.WriteHeader(200)
+	return username, password
 }
 
 func createAddress(a address) (string, error) {
@@ -155,7 +198,7 @@ func createAddress(a address) (string, error) {
 		fmt.Println("URL: " + url)
 	}
 
-	res, err := http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
+	res, err := http.Post(url, contentType, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		return "", err
 	}
@@ -169,7 +212,7 @@ func createCard(c card) (string, error) {
 		panic(err)
 	}
 
-	res, err := http.Post("http://" + customerHost + addressesPath, "application/json", bytes.NewBuffer(jsonBytes))
+	res, err := http.Post("http://" + customerHost + cardsPath, contentType, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		return "", err
 	}
@@ -186,11 +229,17 @@ func createCustomer(c customer) bool {
 	if dev || verbose {
 		fmt.Println("Posting Customer: " + string(jsonBytes))
 	}
-	res, err := http.Post("http://" + customerHost + addressesPath, "application/json", bytes.NewBuffer(jsonBytes))
+	res, err := http.Post("http://" + customerHost + customersPath, contentType, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		panic(err)
 	}
 	if res.StatusCode == 200 || res.StatusCode == 201 {
+		defer res.Body.Close()
+    	body, err := ioutil.ReadAll(res.Body)
+    	if err != nil {
+    		panic(err)
+    	}
+		fmt.Printf("Customer Response Body size: %d or %d\n", len(body), res.ContentLength)
 		return true
 	}
 	return false
@@ -233,7 +282,9 @@ func validatePassword(u, p string) bool{
 func loadUsers(file string) {
 	f, err := ioutil.ReadFile(file)
 	if err != nil {
-		panic(err)
+		log.Printf("No users file found.")
+		// panic(err)
+		return
 	}
 	json.Unmarshal(f, &users)
 	log.Printf("Loaded %d users.", len(users))
