@@ -127,7 +127,7 @@ app.post("/register", function(req, res, next) {
         if (error) {
             return next(error);
         }
-        respondSuccessBody(res, JSON.stringify(body));
+        respondStatus(res, response.statusCode);
     }.bind({res: res}));
 });
 

@@ -70,8 +70,11 @@ class APITasks(TaskSet):
 	def login(self):
 		base64string = base64.encodestring('%s:%s' % (self.username, self.password)).replace('\n', '')
 		login = self.client.get("/login", headers={"Authorization":"Basic %s" % base64string})
-		# print login.cookies
-		# self.cust_id = login.cookies["logged_in"]
+		print login.cookies
+		if "logged_in" in login.cookies:
+			self.cust_id = login.cookies["logged_in"]
+		else:
+			self.cust_id = "1"
 
 	def createCustomer(self):
 		# TODO just use same address/card for all generated customers?
